@@ -30,7 +30,7 @@ export class ExplorerPRNGRollRange implements ExplorerPRNGRoll {
 }
 
 export class ExplorerPRNGRollShuffle implements ExplorerPRNGRoll {
-	constructor (
+constructor (
 		public values : number[]
 	) {
 	}
@@ -117,9 +117,9 @@ export class ExplorerPRNG extends PRNG {
 			return min;
 		}
 
-		++this.currentIndex;
-		if (this.currentIndex < this.values.length) {
-			let next = this.values[this.currentIndex] as ExplorerPRNGRollRange;
+		let index : number = this.currentIndex++;
+		if (index < this.values.length) {
+			let next = this.values[index] as ExplorerPRNGRollRange;
 			if (!(next instanceof ExplorerPRNGRollRange) || next.min !== min || next.max !== max) {
 				throw new Error('Value did not match expected next random value');
 			} else {
@@ -155,9 +155,9 @@ export class ExplorerPRNG extends PRNG {
 			return false;
 		}
 
-		++this.currentIndex;
-		if (this.currentIndex < this.values.length) {
-			let next = this.values[this.currentIndex] as ExplorerPRNGRollChance;
+		let index : number = this.currentIndex++;
+		if (index < this.values.length) {
+			let next = this.values[index] as ExplorerPRNGRollChance;
 			if (!(next instanceof ExplorerPRNGRollChance) || next.numerator !== numerator || next.denominator !== denominator) {
 				throw new Error('Value did not match expected next random value');
 			} else {
@@ -182,10 +182,10 @@ export class ExplorerPRNG extends PRNG {
 	shuffle<T>(items: T[], start: number = 0, end: number = items.length) {
 		let values : number[] = [];
 
-		++this.currentIndex;
-		if (this.currentIndex < this.values.length) {
-			let next = this.values[this.currentIndex] as ExplorerPRNGRollShuffle;
-			if (!(next instanceof ExplorerPRNGRollShuffle) || next.length !== (end - start)) {
+		let index : number = this.currentIndex++;
+		if (index < this.values.length) {
+			let next = this.values[index] as ExplorerPRNGRollShuffle;
+			if (!(next instanceof ExplorerPRNGRollShuffle) || next.values.length !== (end - start)) {
 				throw new Error('Value did not match expected next random value');
 			} else {
 				values = next.values;

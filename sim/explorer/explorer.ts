@@ -83,7 +83,7 @@ export class Explorer {
 		}
 	}
 
-	continue = () => {
+	continue() {
 		let requests = this.battle.getRequests(this.battle.requestState, this.battle.getMaxTeamSize());
 		for (let i = 0; i < requests.length; ++i) {
 			if (requests[i]) {
@@ -92,13 +92,13 @@ export class Explorer {
 		}
 	}
 
-	waitForEnd = () : Promise<boolean> => {
+	waitForEnd() : Promise<boolean> {
 		return new Promise(resolve => {
 			this.completionCallbacks.push(resolve);
 		})
 	}
 
-	onRequestReceived = (playerIndex : number, request: any) => {
+	onRequestReceived(playerIndex : number, request: any) {
 		this.started = true;
 		let choices : ExplorerChoiceData[] = [];
 
