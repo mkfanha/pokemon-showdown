@@ -1034,8 +1034,7 @@ let BattleScripts = {
 			/** @type {SecondaryEffect[]} */
 			let secondaries = this.runEvent('ModifySecondaries', target, pokemon, moveData, moveData.secondaries.slice());
 			for (const secondary of secondaries) {
-				let secondaryRoll = this.random(100);
-				if (typeof secondary.chance === 'undefined' || secondaryRoll < secondary.chance) {
+				if (typeof secondary.chance === 'undefined' || this.randomChance(secondary.chance, 100)) {
 					this.moveHit(target, pokemon, move, secondary, true, isSelf);
 				}
 			}
