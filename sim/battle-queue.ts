@@ -99,6 +99,8 @@ export interface PokemonAction {
 	speed: number;
 	/** the pokemon doing action */
 	pokemon: Pokemon;
+	/** `runSwitch` only: the pokemon forcing this pokemon to switch in */
+	dragger?: Pokemon;
 }
 
 export type Action = MoveAction | SwitchAction | TeamAction | FieldAction | PokemonAction;
@@ -132,7 +134,7 @@ export class BattleQueue extends Array<Action> {
 	 * Returns an array of Actions because some ActionChoices (like mega moves)
 	 * resolve to two Actions (mega evolution + use move)
 	 */
-	resolveAction(action: ActionChoice, midTurn: boolean = false): Action[] {
+	resolveAction(action: ActionChoice, midTurn = false): Action[] {
 		if (!action) throw new Error(`Action not passed to resolveAction`);
 		if (action.choice === 'pass') return [];
 		const actions = [action];
@@ -154,8 +156,7 @@ export class BattleQueue extends Array<Action> {
 				megaEvo: 104,
 				runDynamax: 105,
 
-				shift: 106,
-
+				shift: 200,
 				// default is 200 (for moves)
 
 				residual: 300,
@@ -260,7 +261,7 @@ export class BattleQueue extends Array<Action> {
 	}
 
 	willMove(pokemon: Pokemon) {
-		if (pokemon.fainted) return false;
+		if (pokemon.fainted) return null;
 		for (const action of this) {
 			if (action.choice === 'move' && action.pokemon === pokemon) {
 				return action;
@@ -296,7 +297,7 @@ export class BattleQueue extends Array<Action> {
 				return action;
 			}
 		}
-		return false;
+		return null;
 	}
 
 	/**
@@ -304,7 +305,7 @@ export class BattleQueue extends Array<Action> {
 	 * would have happened (sorting by priority/speed), without
 	 * re-sorting the existing actions.
 	 */
-	insertChoice(choices: ActionChoice | ActionChoice[], midTurn: boolean = false) {
+	insertChoice(choices: ActionChoice | ActionChoice[], midTurn = false) {
 		if (Array.isArray(choices)) {
 			for (const choice of choices) {
 				this.insertChoice(choice);
@@ -330,10 +331,13 @@ export class BattleQueue extends Array<Action> {
 		this.splice(0);
 	}
 
-	debug() {
-		return this.map(action =>
+	debug(action?: Action): string {
+		if (action) {
 			// @ts-ignore
-			`${action.order || ''}:${action.priority || ''}:${action.speed || ''}:${action.subOrder || ''} - ${action.choice}${action.pokemon ? ' ' + action.pokemon : ''}${action.move ? ' ' + action.move : ''}`
+			return `${action.order || ''}:${action.priority || ''}:${action.speed || ''}:${action.subOrder || ''} - ${action.choice}${action.pokemon ? ' ' + action.pokemon : ''}${action.move ? ' ' + action.move : ''}`;
+		}
+		return this.map(
+			queueAction => this.debug(queueAction)
 		).join('\n') + '\n';
 	}
 

@@ -34,17 +34,17 @@ const THROTTLE_BUFFER_LIMIT = 6;
 const THROTTLE_MULTILINE_WARN = 3;
 const THROTTLE_MULTILINE_WARN_STAFF = 6;
 
-const PERMALOCK_CACHE_TIME = 30 * 24 * 60 * 60 * 1000;
+const PERMALOCK_CACHE_TIME = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 const DEFAULT_TRAINER_SPRITES = [1, 2, 101, 102, 169, 170, 265, 266];
 
-import { FS } from '../lib/fs';
+import {FS} from '../lib/fs';
 
 const MINUTES = 60 * 1000;
 const IDLE_TIMER = 60 * MINUTES;
 const STAFF_IDLE_TIMER = 30 * MINUTES;
 
-type Worker = import('cluster').Worker;
+type StreamWorker = import('../lib/process-manager').StreamWorker;
 
 /*********************************************************
  * Utility functions
@@ -191,90 +191,9 @@ function exportUsergroups() {
 	}
 	return FS('config/usergroups.csv').write(buffer);
 }
-// tslint:disable-next-line:no-floating-promises
-importUsergroups();
+void importUsergroups();
 
-function cacheGroupData() {
-	if (Config.groups) {
-		// Support for old config groups format.
-		// Should be removed soon.
-		console.error(
-			`You are using a deprecated version of user group specification in config.\n` +
-			`Support for this will be removed soon.\n` +
-			`Please ensure that you update your config.js to the new format (see config-example.js, line 220).\n`
-		);
-	} else {
-		Config.punishgroups = Object.create(null);
-		Config.groups = Object.create(null);
-		Config.groupsranking = [];
-	}
-
-	const groups = Config.groups;
-	const punishgroups = Config.punishgroups;
-	const cachedGroups: {[k: string]: 'processing' | true} = {};
-
-	function cacheGroup(sym: string, groupData: AnyObject) {
-		if (cachedGroups[sym] === 'processing') return false; // cyclic inheritance.
-
-		if (cachedGroups[sym] !== true && groupData['inherit']) {
-			cachedGroups[sym] = 'processing';
-			const inheritGroup = groups[groupData['inherit']];
-			if (cacheGroup(groupData['inherit'], inheritGroup)) {
-				// Add lower group permissions to higher ranked groups,
-				// preserving permissions specifically declared for the higher group.
-				for (const key in inheritGroup) {
-					if (key in groupData) continue;
-					groupData[key] = inheritGroup[key];
-				}
-			}
-			delete groupData['inherit'];
-		}
-		return (cachedGroups[sym] = true);
-	}
-
-	if (Config.grouplist) { // Using new groups format.
-		const grouplist = Config.grouplist;
-		const numGroups = grouplist.length;
-		for (let i = 0; i < numGroups; i++) {
-			const groupData = grouplist[i];
-
-			// punish groups
-			if (groupData.punishgroup) {
-				punishgroups[groupData.id] = groupData;
-				continue;
-			}
-
-			// @ts-ignore - dyanmically assigned property
-			groupData.rank = numGroups - i - 1;
-			groups[groupData.symbol] = groupData;
-			Config.groupsranking.unshift(groupData.symbol);
-		}
-	}
-
-	for (const sym in groups) {
-		const groupData = groups[sym];
-		cacheGroup(sym, groupData);
-	}
-
-	// hardcode default punishgroups.
-	if (!punishgroups.locked) {
-		punishgroups.locked = {
-			name: 'Locked',
-			id: 'locked',
-			symbol: '\u203d',
-		};
-	}
-	if (!punishgroups.muted) {
-		punishgroups.muted = {
-			name: 'Muted',
-			id: 'muted',
-			symbol: '!',
-		};
-	}
-}
-cacheGroupData();
-
-function setOfflineGroup(name: string, group: GroupSymbol, forceTrusted: boolean) {
+function setOfflineGroup(name: string, group: GroupSymbol, forceTrusted?: boolean) {
 	if (!group) throw new Error(`Falsy value passed to setOfflineGroup`);
 	const userid = toID(name);
 	const user = getExactUser(userid);
@@ -324,7 +243,7 @@ const connections = new Map<string, Connection>();
 export class Connection {
 	readonly id: string;
 	readonly socketid: string;
-	readonly worker: Worker;
+	readonly worker: StreamWorker;
 	readonly inRooms: Set<RoomID>;
 	readonly ip: string;
 	readonly protocol: string;
@@ -341,7 +260,7 @@ export class Connection {
 	lastActiveTime: number;
 	constructor(
 		id: string,
-		worker: Worker,
+		worker: StreamWorker,
 		socketid: string,
 		user: User | null,
 		ip: string | null,
@@ -443,14 +362,12 @@ export class User extends Chat.MessageContext {
 	latestHostType: string;
 	ips: {[k: string]: number};
 	latestIp: string;
-	locked: string | ID | null;
-	semilocked: string | null;
-	namelocked: string | ID | null;
-	permalocked: string | ID | null;
+	locked: ID | PunishType | null;
+	semilocked: ID | PunishType | null;
+	namelocked: ID | PunishType | null;
+	permalocked: ID | PunishType | null;
 	prevNames: {[id: /** ID */ string]: string};
 
-	/** Millisecond timestamp for last battle decision */
-	lastDecision: number;
 	lastChallenge: number;
 	lastPM: string;
 	team: string;
@@ -465,6 +382,7 @@ export class User extends Chat.MessageContext {
 	lastDisconnected: number;
 	lastConnected: number;
 	inviteOnlyNextBattle: boolean;
+	foodfight?: {generatedTeam: string[], dish: string, ingredients: string[], timestamp: number};
 
 	chatQueue: ChatQueueEntry[] | null;
 	chatQueueTimeout: NodeJS.Timeout | null;
@@ -521,8 +439,6 @@ export class User extends Chat.MessageContext {
 		this.namelocked = null;
 		this.permalocked = null;
 		this.prevNames = Object.create(null);
-
-		this.lastDecision = 0;
 
 		// misc state
 		this.lastChallenge = 0;
@@ -589,10 +505,10 @@ export class User extends Chat.MessageContext {
 	popup(message: string) {
 		this.send(`|popup|` + message.replace(/\n/g, '||'));
 	}
-	getIdentity(roomid = '' as RoomID) {
+	getIdentity(roomid: RoomID = '') {
+		const punishgroups = Config.punishgroups || {locked: null, muted: null};
 		if (this.locked || this.namelocked) {
-			const lockedSymbol = (Config.punishgroups && Config.punishgroups.locked ? Config.punishgroups.locked.symbol
-				: '\u203d');
+			const lockedSymbol = (punishgroups.locked && punishgroups.locked.symbol || '\u203d');
 			return lockedSymbol + this.name;
 		}
 		if (roomid && roomid !== 'global') {
@@ -601,18 +517,18 @@ export class User extends Chat.MessageContext {
 				throw new Error(`Room doesn't exist: ${roomid}`);
 			}
 			if (room.isMuted(this)) {
-				const mutedSymbol = (Config.punishgroups && Config.punishgroups.muted ? Config.punishgroups.muted.symbol : '!');
+				const mutedSymbol = (punishgroups.muted && punishgroups.muted.symbol || '!');
 				return mutedSymbol + this.name;
 			}
 			return room.getAuth(this) + this.name;
 		}
 		if (this.semilocked) {
-			const mutedSymbol = (Config.punishgroups && Config.punishgroups.muted ? Config.punishgroups.muted.symbol : '!');
+			const mutedSymbol = (punishgroups.muted && punishgroups.muted.symbol || '!');
 			return mutedSymbol + this.name;
 		}
 		return this.group + this.name;
 	}
-	getIdentityWithStatus(roomid = '' as RoomID) {
+	getIdentityWithStatus(roomid: RoomID = '') {
 		const identity = this.getIdentity(roomid);
 		const status = this.statusType === 'online' ? '' : '@!';
 		return `${identity}${status}`;
@@ -622,9 +538,10 @@ export class User extends Chat.MessageContext {
 		const status = statusMessage + (this.userMessage || '');
 		return status;
 	}
-	authAtLeast(minAuth: string, room: BasicChatRoom | null = null) {
+	authAtLeast(minAuth: string, room: Room | BasicChatRoom | null = null) {
 		if (!minAuth || minAuth === ' ') return true;
-		if (minAuth === 'unlocked') return !(this.locked || this.semilocked);
+		if (this.locked || this.semilocked) return false;
+		if (minAuth === 'unlocked') return true;
 		if (minAuth === 'trusted' && this.trusted) return true;
 		if (minAuth === 'autoconfirmed' && this.autoconfirmed) return true;
 
@@ -635,26 +552,27 @@ export class User extends Chat.MessageContext {
 		const auth = (room && !this.can('makeroom') ? room.getAuth(this) : this.group);
 		return auth in Config.groups && Config.groups[auth].rank >= Config.groups[minAuth].rank;
 	}
-	can(permission: string, target: string | User | null = null, room: BasicChatRoom | null = null): boolean {
+	can(permission: string, target: string | User | null = null, room: Room | BasicChatRoom | null = null): boolean {
 		if (this.hasSysopAccess()) return true;
 
 		let groupData = Config.groups[this.group];
-		if (groupData && groupData['root']) {
+		if (groupData?.['root']) {
 			return true;
 		}
 
 		let group: GroupSymbol;
-		let targetGroup = '';
+		let targetGroup: GroupSymbol | '' = '';
 		let targetUser = null;
 
 		if (typeof target === 'string') {
-			targetGroup = target;
+			targetGroup = target as GroupSymbol;
 		} else {
 			targetUser = target;
 		}
 
 		if (room && (room.auth || room.parent)) {
 			group = room.getAuth(this);
+			if (!Config.groups[group]) group = this.group;
 			if (targetUser) targetGroup = room.getAuth(targetUser);
 			if (room.isPrivate === true && this.can('makeroom')) group = this.group;
 		} else {
@@ -663,6 +581,7 @@ export class User extends Chat.MessageContext {
 		}
 
 		groupData = Config.groups[group];
+		if (!groupData) return false;
 
 		const roomIsTemporary = room && (room.isPersonal || room.battle);
 		if (roomIsTemporary && group === this.group && groupData.globalGroupInPersonalRoom) {
@@ -672,7 +591,7 @@ export class User extends Chat.MessageContext {
 			}
 		}
 
-		if (groupData && groupData[permission]) {
+		if (groupData[permission]) {
 			const jurisdiction = groupData[permission];
 			if (!targetUser && !targetGroup) {
 				return !!jurisdiction;
@@ -689,7 +608,8 @@ export class User extends Chat.MessageContext {
 			if (jurisdiction.includes('s') && targetUser === this) {
 				return true;
 			}
-			if (jurisdiction.includes('u') && Config.groupsranking.indexOf(group) > Config.groupsranking.indexOf(targetGroup)) {
+			if (jurisdiction.includes('u') &&
+				Config.groupsranking.indexOf(group) > Config.groupsranking.indexOf(targetGroup as GroupSymbol)) {
 				return true;
 			}
 		}
@@ -905,9 +825,9 @@ export class User extends Chat.MessageContext {
 				this.autoconfirmed = userid;
 			} else if (userType === '5') {
 				this.permalocked = userid;
-				Punishments.lock(this, Date.now() + PERMALOCK_CACHE_TIME, userid, true, `Permalocked as ${name}`);
+				void Punishments.lock(this, Date.now() + PERMALOCK_CACHE_TIME, userid, true, `Permalocked as ${name}`);
 			} else if (userType === '6') {
-				Punishments.lock(this, Date.now() + PERMALOCK_CACHE_TIME, userid, true, `Permabanned as ${name}`);
+				void Punishments.lock(this, Date.now() + PERMALOCK_CACHE_TIME, userid, true, `Permabanned as ${name}`);
 				this.disconnectAll();
 			}
 		}
@@ -924,7 +844,7 @@ export class User extends Chat.MessageContext {
 
 		let user = users.get(userid);
 		const possibleUser = Users.get(userid);
-		if (possibleUser && possibleUser.namelocked) {
+		if (possibleUser?.namelocked) {
 			// allows namelocked users to be merged
 			user = possibleUser;
 		}
@@ -1170,10 +1090,11 @@ export class User extends Chat.MessageContext {
 			this.avatar = Config.customavatars[this.id];
 		}
 
-		this.isStaff = Config.groups[this.group] && (Config.groups[this.group].lock || Config.groups[this.group].root);
+		const groupInfo = Config.groups[this.group];
+		this.isStaff = !!(groupInfo && (groupInfo.lock || groupInfo.root));
 		if (!this.isStaff) {
 			const staffRoom = Rooms.get('staff');
-			this.isStaff = !!(staffRoom && staffRoom.auth && staffRoom.auth[this.id]);
+			this.isStaff = !!staffRoom?.auth?.[this.id];
 		}
 		if (this.trusted) {
 			if (this.locked && this.permalocked) {
@@ -1188,7 +1109,7 @@ export class User extends Chat.MessageContext {
 				this.semilocked = null;
 			} else if (this.semilocked === '#dnsbl') {
 				this.popup(`You are locked because someone using your IP has spammed/hacked other websites. This usually means either you're using a proxy, you're in a country where other people commonly hack, or you have a virus on your computer that's spamming websites.`);
-				this.semilocked = '#dnsbl.';
+				this.semilocked = '#dnsbl.' as PunishType;
 			}
 		}
 		if (this.blockPMs && this.can('lock') && !this.can('bypassall')) this.blockPMs = false;
@@ -1201,10 +1122,11 @@ export class User extends Chat.MessageContext {
 		if (!group) throw new Error(`Falsy value passed to setGroup`);
 		this.group = group;
 		const wasStaff = this.isStaff;
-		this.isStaff = Config.groups[this.group] && (Config.groups[this.group].lock || Config.groups[this.group].root);
+		const groupInfo = Config.groups[this.group];
+		this.isStaff = !!(groupInfo && (groupInfo.lock || groupInfo.root));
 		if (!this.isStaff) {
 			const staffRoom = Rooms.get('staff');
-			this.isStaff = !!(staffRoom && staffRoom.auth && staffRoom.auth[this.id]);
+			this.isStaff = !!(staffRoom?.auth?.[this.id]);
 		}
 		if (wasStaff !== this.isStaff) this.update('isStaff');
 		Rooms.global.checkAutojoin(this);
@@ -1259,15 +1181,15 @@ export class User extends Chat.MessageContext {
 	onDisconnect(connection: Connection) {
 		for (const [i, connected] of this.connections.entries()) {
 			if (connected === connection) {
+				this.connections.splice(i, 1);
 				// console.log('DISCONNECT: ' + this.id);
-				if (this.connections.length <= 1) {
+				if (!this.connections.length) {
 					this.markDisconnected();
 				}
 				for (const roomid of connection.inRooms) {
 					this.leaveRoom(Rooms.get(roomid)!, connection, true);
 				}
 				--this.ips[connection.ip];
-				this.connections.splice(i, 1);
 				break;
 			}
 		}
@@ -1383,7 +1305,7 @@ export class User extends Chat.MessageContext {
 				// only join full clients, not pop-out single-room
 				// clients
 				// (...no, pop-out rooms haven't been implemented yet)
-				if (curConnection.inRooms.has('global' as RoomID)) {
+				if (curConnection.inRooms.has('global')) {
 					this.joinRoom(room, curConnection);
 				}
 			}
@@ -1401,7 +1323,7 @@ export class User extends Chat.MessageContext {
 	leaveRoom(
 		room: Room | string,
 		connection: Connection | null = null,
-		force: boolean = false
+		force = false
 	) {
 		room = Rooms.get(room)!;
 		if (room.roomid === 'global') {
@@ -1475,8 +1397,9 @@ export class User extends Chat.MessageContext {
 		if (this.chatQueueTimeout) {
 			if (!this.chatQueue) this.chatQueue = []; // this should never happen
 			if (this.chatQueue.length >= THROTTLE_BUFFER_LIMIT - 1) {
-				connection.sendTo(room, `|raw|` +
-					`<strong class="message-throttle-notice">Your message was not sent because you've been typing too quickly.</strong>`
+				connection.sendTo(
+					room,
+					`|raw|<strong class="message-throttle-notice">Your message was not sent because you've been typing too quickly.</strong>`
 				);
 				return false;
 			} else {
@@ -1539,8 +1462,7 @@ export class User extends Chat.MessageContext {
 		const throttleDelay = this.trusted ? THROTTLE_DELAY_TRUSTED : THROTTLE_DELAY;
 
 		if (this.chatQueue.length) {
-			this.chatQueueTimeout = setTimeout(
-				() => this.processChatQueue(), throttleDelay);
+			this.chatQueueTimeout = setTimeout(() => this.processChatQueue(), throttleDelay);
 		} else {
 			this.chatQueue = null;
 		}
@@ -1562,10 +1484,10 @@ export class User extends Chat.MessageContext {
 		this.updateIdentity();
 	}
 	getAccountStatusString() {
-		return this.trusted === this.id ? `[trusted]`
-			: this.autoconfirmed === this.id ? `[ac]`
-			: this.registered ? `[registered]`
-			: ``;
+		return this.trusted === this.id ? `[trusted]` :
+			this.autoconfirmed === this.id ? `[ac]` :
+			this.registered ? `[registered]` :
+			``;
 	}
 	destroy() {
 		// deallocate user
@@ -1600,16 +1522,18 @@ export class User extends Chat.MessageContext {
 function pruneInactive(threshold: number) {
 	const now = Date.now();
 	for (const user of users.values()) {
-		const awayTimer = user.can('lock') ? STAFF_IDLE_TIMER : IDLE_TIMER;
-		const bypass = user.statusType !== 'online' ||
-			(!user.can('bypassall') &&
-				(user.can('bypassafktimer') ||
-				Array.from(user.inRooms).some(room => user.can('bypassafktimer', null, Rooms.get(room) as BasicChatRoom))));
-		if (!bypass && !user.connections.some(connection => now - connection.lastActiveTime < awayTimer)) {
-			user.setStatusType('idle');
+		if (user.statusType === 'online') {
+			// check if we should set status to idle
+			const awayTimer = user.can('lock') ? STAFF_IDLE_TIMER : IDLE_TIMER;
+			const bypass = !user.can('bypassall') && (
+				user.can('bypassafktimer') ||
+				Array.from(user.inRooms).some(room => user.can('bypassafktimer', null, Rooms.get(room)))
+			);
+			if (!bypass && !user.connections.some(connection => now - connection.lastActiveTime < awayTimer)) {
+				user.setStatusType('idle');
+			}
 		}
-		if (user.connected) continue;
-		if ((now - user.lastDisconnected) > threshold) {
+		if (!user.connected && (now - user.lastDisconnected) > threshold) {
 			user.destroy();
 		}
 	}
@@ -1628,9 +1552,9 @@ function logGhostConnections(threshold: number): Promise<unknown> {
 			buffer.push(log);
 		}
 	}
-	return buffer.length
-		? FS(`logs/ghosts-${process.pid}.log`).append(buffer.join('\r\n') + '\r\n')
-		: Promise.resolve();
+	return buffer.length ?
+		FS(`logs/ghosts-${process.pid}.log`).append(buffer.join('\r\n') + '\r\n') :
+		Promise.resolve();
 }
 
 /*********************************************************
@@ -1638,7 +1562,7 @@ function logGhostConnections(threshold: number): Promise<unknown> {
  *********************************************************/
 
 function socketConnect(
-	worker: Worker,
+	worker: StreamWorker,
 	workerid: number,
 	socketid: string,
 	ip: string,
@@ -1677,16 +1601,23 @@ function socketConnect(
 		}
 	});
 
-	user.joinRoom('global' as RoomID, connection);
+	user.joinRoom('global', connection);
 }
-function socketDisconnect(worker: Worker, workerid: number, socketid: string) {
+function socketDisconnect(worker: StreamWorker, workerid: number, socketid: string) {
 	const id = '' + workerid + '-' + socketid;
 
 	const connection = connections.get(id);
 	if (!connection) return;
 	connection.onDisconnect();
 }
-function socketReceive(worker: Worker, workerid: number, socketid: string, message: string) {
+function socketDisconnectAll(worker: StreamWorker, workerid: number) {
+	for (const connection of connections.values()) {
+		if (connection.worker === worker) {
+			connection.onDisconnect();
+		}
+	}
+}
+function socketReceive(worker: StreamWorker, workerid: number, socketid: string, message: string) {
 	const id = `${workerid}-${socketid}`;
 
 	const connection = connections.get(id);
@@ -1722,9 +1653,9 @@ function socketReceive(worker: Worker, workerid: number, socketid: string, messa
 
 	const lines = message.split('\n');
 	if (!lines[lines.length - 1]) lines.pop();
-	if (lines.length > (user.isStaff ||
-		(room.auth && room.auth[user.id] && room.auth[user.id] !== '+') ? THROTTLE_MULTILINE_WARN_STAFF
-			: THROTTLE_MULTILINE_WARN)) {
+	const maxLineCount = user.isStaff || (room.auth && room.auth[user.id] && room.auth[user.id] !== '+') ?
+		THROTTLE_MULTILINE_WARN_STAFF : THROTTLE_MULTILINE_WARN;
+	if (lines.length > maxLineCount) {
 		connection.popup(`You're sending too many lines at once. Try using a paste service like [[Pastebin]].`);
 		return;
 	}
@@ -1762,21 +1693,21 @@ export const Users = {
 	isUsernameKnown,
 	isTrusted,
 	importUsergroups,
-	cacheGroupData,
 	PLAYER_SYMBOL,
 	HOST_SYMBOL,
 	connections,
 	User,
 	Connection,
 	socketDisconnect,
+	socketDisconnectAll,
 	socketReceive,
 	pruneInactive,
 	pruneInactiveTimer: setInterval(() => {
 		pruneInactive(Config.inactiveuserthreshold || 60 * MINUTES);
 	}, 30 * MINUTES),
 	logGhostConnections,
-	logGhostConnectionsTimer: setInterval(async () => {
-		await logGhostConnections(7 * 24 * 60 * MINUTES);
+	logGhostConnectionsTimer: setInterval(() => {
+		void logGhostConnections(7 * 24 * 60 * MINUTES);
 	}, 7 * 24 * 60 * MINUTES),
 	socketConnect,
 };
