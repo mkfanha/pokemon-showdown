@@ -4,13 +4,11 @@ import { ExplorerPath, ExplorerDecision } from "./explorer-path";
 import { Explorer } from "./explorer";
 import { getPlayerStreams, BattleTextStream } from "../battle-stream";
 import { ObjectReadStream } from "../../lib/streams";
-import { consoleips } from "../../config/config-example";
 
 export class ExplorerPathResult {
 	constructor(
 		public battleJson : AnyObject,
-		public path : ExplorerPath,
-		public log : string[]
+		public path : ExplorerPath
 	) {
 	}
 }
@@ -28,13 +26,10 @@ export class ExplorerRunner {
 
 	public async run() : Promise<void> {
 		let result : ExplorerPathResult | null = await this.runInternal(new ExplorerPath());
-		/*console.log(result.path.toString());
-		for (let chunk of result.log) {
-			console.log(chunk);
-		}*/
+
 		while (result != null) {
 			console.log(result.path.toString());
-			//this.results.push(result);
+			this.results.push(result);
 			let lastPath : ExplorerPath = result.path;
 			result = await this.runNextPermutation(lastPath);
 		}

@@ -1,13 +1,8 @@
 // Run this using `node build && node .sim-dist/explorer/explorer-battle`.
 
-import {BattleStream, getPlayerStreams} from '../battle-stream';
-import {ExplorerBattleStream} from './explorer-battle-stream';
 import {Battle} from '../battle';
 import {Dex} from '../dex';
-import {Explorer} from './explorer';
-import { ExplorerPath } from './explorer-path';
-import { consoleips } from '../../config/config-example';
-import { ExplorerRunner } from './explorer-runner';
+import {ExplorerRunner} from './explorer-runner';
 
 let dragapultSet : PokemonSet = {
 	species: 'dragapult',
@@ -65,28 +60,3 @@ let runner = new ExplorerRunner(setupBattle);
 runner.run().then(() => {
 	console.log('Run complete');
 });
-
-/*let battleStartedJson = setupBattle.toJSON();
-
-let battleStream = new ExplorerBattleStream(Battle.fromJSON(battleStartedJson));
-let streams = getPlayerStreams(battleStream);
-
-(async () => {
-	let chunk;
-	// tslint:disable-next-line no-conditional-assignment
-	while ((chunk = await streams.spectator.read())) {
-		console.log(chunk);
-	}
-})();
-
-let path : ExplorerPath = new ExplorerPath();
-if (!battleStream.battle) {
-	throw new Error('Battle cannot be null');
-}
-let explorer : Explorer = new Explorer(battleStream.battle, streams, path, 0, 1);
-explorer.continue();
-
-explorer.waitForEnd().then(result => {
-	battleStream.end();
-	console.log(JSON.stringify(explorer.path));
-});*/
