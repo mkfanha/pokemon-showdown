@@ -9,7 +9,6 @@
 import {ObjectReadWriteStream} from '../../lib/streams';
 import {BattlePlayer} from '../battle-stream';
 import {ExplorerPath, ExplorerChoiceData, ExplorerDecision} from './explorer-path';
-import { consoleips } from '../../config/config-example';
 import { ExplorerPRNG } from './explorer-prng';
 
 
@@ -144,7 +143,6 @@ export class Explorer {
 				console.log(JSON.stringify(request));
 			}
 		} else {
-			console.log('Reached maximum number of decisions');
 			this.done = true;
 			this.onCompleted(false);
 			// TODO: Fire a callback?
