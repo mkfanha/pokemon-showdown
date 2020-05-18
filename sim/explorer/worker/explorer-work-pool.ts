@@ -57,4 +57,8 @@ export class ExplorerWorkPool {
 	public getWorkById(id : string) : IExplorerWorkUnit | undefined {
 		return this.workUnits.get(id);
 	}
+
+	public getAllItems(): IExplorerWorkUnit[] {
+		return Array.from(this.workUnits.values());
+	}
 }

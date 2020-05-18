@@ -60,7 +60,8 @@ let battleJson : AnyObject = setupBattle.toJSON();
 
 // Server logic
 
-let hostPrefix = 'http://localhost:8080';
+let port = 19500;
+let hostPrefix = `http://localhost:${port.toString()}`;
 const basePath = 'explorer';
 const startCommand = 'start';
 const statusCommand = 'status';
@@ -69,33 +70,40 @@ const skipQueryParam = 'skip';
 const countQueryParam = 'count';
 const defaultResultCount = 10;
 
-function respond404(response : ServerResponse) {
+function respond404(response: ServerResponse) {
 	response.statusCode = 404;
 	response.end();
 }
 
-function respondObject(response : ServerResponse, obj : any) {
+function respondObject(response: ServerResponse, obj: any) {
 	response.end(JSON.stringify(obj));
 }
 
-function toWorkSummary(wu : IExplorerWorkUnit) : any {
+function toWorkHeader(wu: IExplorerWorkUnit): any {
 	return {
 		id : wu.id,
 		resultCount : wu.results.length,
-		finished : wu.finished,
+		finished : wu.finished
+	};
+}
+
+function toWorkSummary(wu: IExplorerWorkUnit): any {
+	return {
+		...toWorkHeader(wu),
 		statusLink : `${hostPrefix}/${basePath}/${statusCommand}/${wu.id}`,
 		resultsLink : `${hostPrefix}/${basePath}/${resultsCommand}/${wu.id}`
 	};
 }
 
-function toResults(wu : IExplorerWorkUnit, skip : number, count : number) {
+function toResults(wu: IExplorerWorkUnit, skip: number, count: number): any {
 	return {
-		results : wu.results.slice(skip, skip + count),
-		finished : wu.finished,
-		statusLink : `${hostPrefix}/${basePath}/${statusCommand}/${wu.id}`,
-		selfLink : `${hostPrefix}/${basePath}/${resultsCommand}/${wu.id}?${skipQueryParam}=${skip}&${countQueryParam}=${count}`,
-		prevLink : skip < count ? null : `${hostPrefix}/${basePath}/${resultsCommand}/${wu.id}?${skipQueryParam}=${skip-count}&${countQueryParam}=${count}`,
-		nextLink : skip + count >= wu.results.length ? null : `${hostPrefix}/${basePath}/${resultsCommand}/${wu.id}?${skipQueryParam}=${skip+count}&${countQueryParam}=${count}`
+		...toWorkHeader(wu),
+		offset: skip,
+		results: wu.results.slice(skip, skip + count),
+		statusLink: `${hostPrefix}/${basePath}/${statusCommand}/${wu.id}`,
+		selfLink: `${hostPrefix}/${basePath}/${resultsCommand}/${wu.id}?${skipQueryParam}=${skip}&${countQueryParam}=${count}`,
+		prevLink: skip < count ? null : `${hostPrefix}/${basePath}/${resultsCommand}/${wu.id}?${skipQueryParam}=${skip-count}&${countQueryParam}=${count}`,
+		nextLink: skip + count >= wu.results.length ? null : `${hostPrefix}/${basePath}/${resultsCommand}/${wu.id}?${skipQueryParam}=${skip+count}&${countQueryParam}=${count}`
 	};
 }
 
@@ -130,9 +138,9 @@ let http : Server = createServer((request: IncomingMessage, response: ServerResp
 		return;
 
 		case statusCommand: {
-			let workUnit : IExplorerWorkUnit | undefined;
+			let workUnit: IExplorerWorkUnit | undefined;
 			if (requestParts.length < 3 || !(workUnit = explorerWorkPool.getWorkById(requestParts[2]))) {
-				respond404(response);
+				respondObject(response, explorerWorkPool.getAllItems().map(wu => toWorkSummary(wu)));
 			}
 			else {
 				respondObject(response, toWorkSummary(workUnit));
@@ -141,7 +149,7 @@ let http : Server = createServer((request: IncomingMessage, response: ServerResp
 		return;
 
 		case resultsCommand: {
-			let workUnit : IExplorerWorkUnit | undefined;
+			let workUnit: IExplorerWorkUnit | undefined;
 			if (requestParts.length < 3 || !(workUnit = explorerWorkPool.getWorkById(requestParts[2]))) {
 				respond404(response);
 			}
@@ -159,4 +167,4 @@ let http : Server = createServer((request: IncomingMessage, response: ServerResp
 			respond404(response);
 			return;
 	}
-}).listen(8080);
+}).listen(port);
